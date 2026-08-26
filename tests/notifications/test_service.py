@@ -12,7 +12,10 @@ from local_deep_research.notifications.service import (
     RETRY_BACKOFF_MULTIPLIER,
 )
 from local_deep_research.notifications.templates import EventType
-from local_deep_research.notifications.exceptions import SendError
+from local_deep_research.notifications.exceptions import (
+    SendError,
+    ServiceError,
+)
 
 
 class TestNotificationServiceInit:
@@ -428,6 +431,46 @@ class TestTestServiceMultiUrl:
 
         assert result["success"] is False
         assert "cloud-metadata" in result["error"]
+
+
+class TestSendMultiUrlSsrf:
+    """The configured-dispatch path (``send()``), not just
+    ``test_service()``, must validate EVERY entry Apprise parses out of
+    a multi-URL string (issue #5120 review finding). A single-URL
+    validator would see only the leading valid-looking discord entry
+    and let a comma/space-smuggled cloud-metadata target reach Apprise's
+    dispatch. This exercises the REAL
+    ``NotificationURLValidator.validate_service_url_with_hint`` and the
+    REAL Apprise parser — only ``notify`` is mocked — so it pins the
+    per-target SSRF gate on the send() path end to end.
+    """
+
+    ATTACK_URL = (
+        "discord://123456789012345678/tok,json://169.254.169.254/metadata"
+    )
+
+    @patch("local_deep_research.notifications.service.apprise.Apprise.notify")
+    def test_send_rejects_comma_smuggled_metadata_url(self, mock_notify):
+        service = NotificationService(
+            outbound_allowed=True, allow_private_ips=False
+        )
+
+        with pytest.raises(ServiceError):
+            service.send("Title", "Body", service_urls=self.ATTACK_URL)
+
+        mock_notify.assert_not_called()
+
+    @patch("local_deep_research.notifications.service.apprise.Apprise.notify")
+    def test_send_rejects_space_smuggled_metadata_url(self, mock_notify):
+        service = NotificationService(
+            outbound_allowed=True, allow_private_ips=False
+        )
+
+        attack_url = self.ATTACK_URL.replace(",", " ")
+        with pytest.raises(ServiceError):
+            service.send("Title", "Body", service_urls=attack_url)
+
+        mock_notify.assert_not_called()
 
 
 class TestGetServiceType:
